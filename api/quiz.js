@@ -7,20 +7,33 @@ module.exports = async (req, res) => {
  
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            maxOutputTokens: 1500,
+            thinkingConfig: { thinkingBudget: 0 }
+          }
+        })
       }
     );
     const data = await response.json();
-    let raw = data?.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
+    const candidate = data?.candidates?.[0];
+    let raw = candidate?.content?.parts?.[0]?.text || "";
+ 
+    if (!raw) {
+      const reason = candidate?.finishReason || data?.promptFeedback?.blockReason || data?.error?.message || "unknown";
+      return res.status(200).json({ quiz: [], debug: `No text returned. Reason: ${reason}` });
+    }
+ 
     raw = raw.replace(/```json|```/g, "").trim();
     const quiz = JSON.parse(raw);
     res.status(200).json({ quiz });
   } catch (e) {
-    res.status(500).json({ error: "AI request failed" });
+    res.status(500).json({ error: "AI request failed", debug: String(e) });
   }
 };
  
