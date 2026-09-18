@@ -7,18 +7,30 @@ module.exports = async (req, res) => {
  
   try {
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${process.env.GEMINI_API_KEY}`,
+      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent?key=${process.env.GEMINI_API_KEY}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }] })
+        body: JSON.stringify({
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            maxOutputTokens: 800,
+            thinkingConfig: { thinkingBudget: 0 }
+          }
+        })
       }
     );
     const data = await response.json();
-    const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    const candidate = data?.candidates?.[0];
+    const text = candidate?.content?.parts?.[0]?.text || "";
+ 
+    if (!text) {
+      const reason = candidate?.finishReason || data?.promptFeedback?.blockReason || data?.error?.message || "unknown";
+      return res.status(200).json({ text: "", debug: `No text returned. Reason: ${reason}` });
+    }
     res.status(200).json({ text });
   } catch (e) {
-    res.status(500).json({ error: "AI request failed" });
+    res.status(500).json({ error: "AI request failed", debug: String(e) });
   }
 };
  
