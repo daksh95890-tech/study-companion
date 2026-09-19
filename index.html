@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Study Companion</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+  :root {
+    --room: #141726; --desk: #1D2137; --deskEdge: #2A2F4D; --lamp: #F2A93B; --lampSoft: #F2A93B33;
+    --paper: #EDEAE3; --paperMuted: #9AA0BE; --correct: #7BC996; --correctBg: #7BC99622; --wrong: #E4776B; --wrongBg: #E4776B22;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; min-height: 100vh; background: radial-gradient(ellipse 700px 420px at 50% 0%, var(--lampSoft), transparent 70%), var(--room); font-family: 'IBM Plex Sans', system-ui, sans-serif; color: var(--paper); padding: 40px 16px; }
+  .wrap { width: 100%; max-width: 560px; margin: 0 auto; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; background: var(--lamp); box-shadow: 0 0 16px 4px var(--lamp); margin-bottom: 14px; }
+  h1 { font-family: 'Source Serif 4', Georgia, serif; font-size: 26px; font-weight: 600; margin: 0 0 8px 0; line-height: 1.25; }
+  p.sub { color: var(--paperMuted); font-size: 14px; margin: 0 0 24px 0; }
+  .card { background: var(--desk); border: 1px solid var(--deskEdge); border-radius: 10px; padding: 22px; }
+  textarea { width: 100%; min-height: 140px; background: transparent; border: none; outline: none; color: var(--paper); font-family: 'Source Serif 4', Georgia, serif; font-size: 16px; line-height: 1.6; resize: vertical; }
+  button { font-family: 'IBM Plex Sans', sans-serif; cursor: pointer; border-radius: 6px; border: none; }
+  .btn-primary { background: var(--lamp); color: #1A1500; font-weight: 600; font-size: 14px; padding: 11px 18px; width: 100%; }
+  .btn-primary:disabled { background: var(--deskEdge); color: var(--paperMuted); cursor: default; }
+  .btn-ghost { background: transparent; color: var(--paperMuted); border: 1px solid var(--deskEdge); font-size: 14px; padding: 11px 18px; }
+  .row { display: flex; gap: 10px; margin-top: 16px; }
+  .row > * { flex: 1; }
+  .explain-text { font-family: 'Source Serif 4', Georgia, serif; font-size: 16px; line-height: 1.7; white-space: pre-wrap; margin: 0; }
+  .opt-btn { display:block; width:100%; text-align:left; background: transparent; border: 1px solid var(--deskEdge); border-radius: 6px; padding: 11px 14px; color: var(--paper); font-size: 14px; margin-bottom: 8px; }
+  .opt-correct { background: var(--correctBg); border-color: var(--correct); }
+  .opt-wrong { background: var(--wrongBg); border-color: var(--wrong); }
+  .muted { color: var(--paperMuted); font-size: 13px; }
+  .err { color: var(--wrong); font-size: 13px; margin-top: 8px; }
+  .score { font-family: 'Source Serif 4', Georgia, serif; font-size: 34px; margin: 0; text-align: center; }
+  .history-item { padding: 12px 0; border-bottom: 1px solid var(--deskEdge); }
+  .history-item:last-child { border-bottom: none; }
+  .top-links { display:flex; justify-content: space-between; align-items:center; margin-bottom: 18px; }
+  .link-btn { background: none; border: none; color: var(--paperMuted); font-size: 13px; text-decoration: underline; cursor: pointer; padding: 0; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="dot"></div>
+  <div class="top-links">
+    <h1 style="margin:0;">Explain it. Quiz me on it.</h1>
+    <button class="link-btn" id="historyToggle">History</button>
+  </div>
+  <p class="sub">Paste whatever you're stuck on. Get it explained plainly, then find out if it actually stuck.</p>
+  <div id="statusLine" class="muted" style="margin-bottom:14px;">Connecting...</div>
+  <div class="card" id="mainCard"></div>
+</div>
+
+<script>
+const SUPABASE_URL = "https://mykyqkbwqaxkgvjgtipz.supabase.co";
+const SUPABASE_KEY = "sb_publishable_cpcJUpn_xOqtzdP3l6g5kA_7DK6jXhu";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+let userId = null;
+const FREE_DAILY_LIMIT = 5;
+let state = { stage: "loading", notes: "", explanation: "", sessionId: null, quiz: [], qIndex: 0, picked: null, score: 0, error: "", showHistory: false, history: [], usedToday: 0, limitReached: false };
+
+function startOfTodayISO() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+async function checkDailyUsage() {
+  try {
+    const { count } = await sb
+      .from("study_sessions")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .gte("created_at", startOfTodayISO());
+    return count || 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function setState(patch) { state = { ...state, ...patch }; render(); }
+
+async function init() {
+  try {
+    let { data: { session } } = await sb.auth.getSession();
+    if (!session) {
+      const { data, error } = await sb.auth.signInAnonymously();
+      if (error) throw error;
+      session = data.session;
+    }
+    userId = session.user.id;
+    document.getElementById("statusLine").textContent = "";
+    const usedToday = await checkDailyUsage();
+    setState({ stage: "input", usedToday, limitReached: usedToday >= FREE_DAILY_LIMIT });
+  } catch (e) {
+    document.getElementById("statusLine").textContent = "Couldn't connect to your account. Check setup and reload.";
+  }
+}
+
+async function callApi(path, body) {
+  const res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error("API error");
+  return await res.json();
+}
+
+async function handleExplain() {
+  if (state.usedToday >= FREE_DAILY_LIMIT) {
+    setState({ limitReached: true });
+    return;
+  }
+  const notesVal = document.getElementById("notesInput").value.trim();
+  if (notesVal.length < 15) return;
+  setState({ notes: notesVal, stage: "explaining", error: "" });
+  try {
+    const result = await callApi("/api/explain", { notes: notesVal });
+    if (!result.text) {
+      setState({ stage: "input", error: result.debug || "Tutor returned nothing. Try again." });
+      return;
+    }
+    const { data, error } = await sb.from("study_sessions").insert({ user_id: userId, notes: notesVal, explanation: result.text }).select().single();
+    if (error) throw error;
+    const newUsed = state.usedToday + 1;
+    setState({ explanation: result.text, sessionId: data.id, stage: "explained", usedToday: newUsed, limitReached: newUsed >= FREE_DAILY_LIMIT });
+  } catch (e) {
+    setState({ stage: "input", error: "Couldn't reach the tutor. Try again." });
+  }
+}
+
+async function handleQuiz() {
+  setState({ stage: "quizzing_loading", error: "" });
+  try {
+    const result = await callApi("/api/quiz", { notes: state.notes, explanation: state.explanation });
+    if (!result.quiz || result.quiz.length === 0) {
+      setState({ stage: "explained", error: result.debug || "Quiz builder returned nothing. Try again." });
+      return;
+    }
+    setState({ quiz: result.quiz, qIndex: 0, picked: null, score: 0, stage: "quizzing" });
+  } catch (e) {
+    setState({ stage: "explained", error: "Couldn't build the quiz. Try again." });
+  }
+}
+
+function choose(i) {
+  if (state.picked !== null) return;
+  const correct = i === state.quiz[state.qIndex].correctIndex;
+  setState({ picked: i, score: correct ? state.score + 1 : state.score });
+}
+
+async function next() {
+  if (state.qIndex + 1 < state.quiz.length) {
+    setState({ qIndex: state.qIndex + 1, picked: null });
+  } else {
+    try { await sb.from("quiz_attempts").insert({ session_id: state.sessionId, user_id: userId, score: state.score, total: state.quiz.length }); } catch (e) {}
+    setState({ stage: "scored" });
+  }
+}
+
+function reset() {
+  const el = document.getElementById("notesInput");
+  if (el) el.value = "";
+  setState({ notes: "", explanation: "", sessionId: null, quiz: [], qIndex: 0, picked: null, score: 0, stage: "input", error: "" });
+}
+
+async function loadHistory() {
+  try {
+    const { data } = await sb.from("study_sessions").select("id, notes, created_at, quiz_attempts(score, total)").order("created_at", { ascending: false }).limit(15);
+    setState({ history: data || [], showHistory: true });
+  } catch (e) {
+    setState({ showHistory: true, history: [] });
+  }
+}
+
+document.getElementById("historyToggle").addEventListener("click", () => {
+  if (state.showHistory) setState({ showHistory: false }); else loadHistory();
+});
+
+function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
+
+function render() {
+  const card = document.getElementById("mainCard");
+  if (state.showHistory) {
+    if (state.history.length === 0) { card.innerHTML = `<p class="muted">No saved topics yet.</p>`; return; }
+    card.innerHTML = state.history.map(h => {
+      const attempt = h.quiz_attempts && h.quiz_attempts[0];
+      const scoreText = attempt ? `${attempt.score}/${attempt.total}` : "not quizzed yet";
+      const preview = h.notes.length > 80 ? h.notes.slice(0, 80) + "…" : h.notes;
+      return `<div class="history-item"><p style="margin:0 0 4px 0;">${esc(preview)}</p><p class="muted" style="margin:0;">${scoreText} · ${new Date(h.created_at).toLocaleDateString()}</p></div>`;
+    }).join("");
+    return;
+  }
+  if (state.stage === "loading") { card.innerHTML = `<p class="muted">Setting things up...</p>`; return; }
+  if (state.stage === "input" || state.stage === "explaining") {
+    const remaining = Math.max(0, FREE_DAILY_LIMIT - state.usedToday);
+    const usageLine = `<p class="muted" style="margin-bottom:10px;">${remaining} of ${FREE_DAILY_LIMIT} free explanations left today</p>`;
+    if (state.limitReached) {
+      card.innerHTML = `
+        ${usageLine}
+        <p class="explain-text">You've used today's ${FREE_DAILY_LIMIT} free explanations. Come back tomorrow for more — or check back soon, paid plans are coming.</p>`;
+      return;
+    }
+    card.innerHTML = `
+      ${usageLine}
+      <textarea id="notesInput" placeholder="Paste your notes, a textbook paragraph, or type what's confusing you...">${esc(state.notes)}</textarea>
+      ${state.error ? `<p class="err">${esc(state.error)}</p>` : ""}
+      <button class="btn-primary" id="explainBtn" style="margin-top:16px;" ${state.stage === "explaining" ? "disabled" : ""}>${state.stage === "explaining" ? "Explaining..." : "Explain this to me"}</button>`;
+    document.getElementById("explainBtn").addEventListener("click", handleExplain);
+    return;
+  }
+  if (state.stage === "explained" || state.stage === "quizzing_loading") {
+    card.innerHTML = `
+      <p class="explain-text">${esc(state.explanation)}</p>
+      ${state.error ? `<p class="err">${esc(state.error)}</p>` : ""}
+      <div class="row">
+        <button class="btn-primary" id="quizBtn" ${state.stage === "quizzing_loading" ? "disabled" : ""}>${state.stage === "quizzing_loading" ? "Building quiz..." : "Quiz me on this"}</button>
+        <button class="btn-ghost" id="newTopicBtn">New topic</button>
+      </div>`;
+    document.getElementById("quizBtn").addEventListener("click", handleQuiz);
+    document.getElementById("newTopicBtn").addEventListener("click", reset);
+    return;
+  }
+  if (state.stage === "quizzing") {
+    const q = state.quiz[state.qIndex];
+    card.innerHTML = `
+      <p class="muted">Question ${state.qIndex + 1} of ${state.quiz.length}</p>
+      <p style="font-family:'Source Serif 4',Georgia,serif;font-size:18px;margin:10px 0 16px 0;">${esc(q.question)}</p>
+      <div id="opts"></div>
+      ${state.picked !== null ? `<p class="muted" style="margin-top:14px;">${esc(q.why)}</p><button class="btn-primary" id="nextBtn" style="margin-top:14px;">${state.qIndex + 1 < state.quiz.length ? "Next question" : "See my score"}</button>` : ""}`;
+    const optsDiv = document.getElementById("opts");
+    q.options.forEach((opt, i) => {
+      const btn = document.createElement("button");
+      btn.className = "opt-btn";
+      if (state.picked !== null && i === q.correctIndex) btn.className += " opt-correct";
+      else if (state.picked !== null && i === state.picked) btn.className += " opt-wrong";
+      btn.textContent = opt;
+      btn.addEventListener("click", () => choose(i));
+      optsDiv.appendChild(btn);
+    });
+    if (state.picked !== null) document.getElementById("nextBtn").addEventListener("click", next);
+    return;
+  }
+  if (state.stage === "scored") {
+    const msg = state.score === state.quiz.length ? "That's a clean sweep. This one's stuck." : state.score >= state.quiz.length / 2 ? "Solid. A couple of spots to go back over." : "Worth re-reading the explanation before you move on.";
+    card.innerHTML = `
+      <p class="score">${state.score} / ${state.quiz.length}</p>
+      <p class="muted" style="text-align:center;">${msg}</p>
+      <div class="row">
+        <button class="btn-ghost" id="retryBtn">Retry quiz</button>
+        <button class="btn-primary" id="newTopicBtn2">New topic</button>
+      </div>`;
+    document.getElementById("retryBtn").addEventListener("click", handleQuiz);
+    document.getElementById("newTopicBtn2").addEventListener("click", reset);
+    return;
+  }
+}
+
+init();
+render();
+</script>
+</body>
+</html>
