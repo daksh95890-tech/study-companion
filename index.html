@@ -58,7 +58,27 @@ const SUPABASE_KEY = "sb_publishable_cpcJUpn_xOqtzdP3l6g5kA_7DK6jXhu";
 const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let userId = null;
-let state = { stage: "loading", notes: "", explanation: "", sessionId: null, quiz: [], qIndex: 0, picked: null, score: 0, error: "", showHistory: false, history: [] };
+const FREE_DAILY_LIMIT = 5;
+let state = { stage: "loading", notes: "", explanation: "", sessionId: null, quiz: [], qIndex: 0, picked: null, score: 0, error: "", showHistory: false, history: [], usedToday: 0, limitReached: false };
+
+function startOfTodayISO() {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  return d.toISOString();
+}
+
+async function checkDailyUsage() {
+  try {
+    const { count } = await sb
+      .from("study_sessions")
+      .select("id", { count: "exact", head: true })
+      .eq("user_id", userId)
+      .gte("created_at", startOfTodayISO());
+    return count || 0;
+  } catch (e) {
+    return 0;
+  }
+}
 
 function setState(patch) { state = { ...state, ...patch }; render(); }
 
@@ -72,7 +92,8 @@ async function init() {
     }
     userId = session.user.id;
     document.getElementById("statusLine").textContent = "";
-    setState({ stage: "input" });
+    const usedToday = await checkDailyUsage();
+    setState({ stage: "input", usedToday, limitReached: usedToday >= FREE_DAILY_LIMIT });
   } catch (e) {
     document.getElementById("statusLine").textContent = "Couldn't connect to your account. Check setup and reload.";
   }
@@ -85,6 +106,10 @@ async function callApi(path, body) {
 }
 
 async function handleExplain() {
+  if (state.usedToday >= FREE_DAILY_LIMIT) {
+    setState({ limitReached: true });
+    return;
+  }
   const notesVal = document.getElementById("notesInput").value.trim();
   if (notesVal.length < 15) return;
   setState({ notes: notesVal, stage: "explaining", error: "" });
@@ -96,7 +121,8 @@ async function handleExplain() {
     }
     const { data, error } = await sb.from("study_sessions").insert({ user_id: userId, notes: notesVal, explanation: result.text }).select().single();
     if (error) throw error;
-    setState({ explanation: result.text, sessionId: data.id, stage: "explained" });
+    const newUsed = state.usedToday + 1;
+    setState({ explanation: result.text, sessionId: data.id, stage: "explained", usedToday: newUsed, limitReached: newUsed >= FREE_DAILY_LIMIT });
   } catch (e) {
     setState({ stage: "input", error: "Couldn't reach the tutor. Try again." });
   }
@@ -166,7 +192,16 @@ function render() {
   }
   if (state.stage === "loading") { card.innerHTML = `<p class="muted">Setting things up...</p>`; return; }
   if (state.stage === "input" || state.stage === "explaining") {
+    const remaining = Math.max(0, FREE_DAILY_LIMIT - state.usedToday);
+    const usageLine = `<p class="muted" style="margin-bottom:10px;">${remaining} of ${FREE_DAILY_LIMIT} free explanations left today</p>`;
+    if (state.limitReached) {
+      card.innerHTML = `
+        ${usageLine}
+        <p class="explain-text">You've used today's ${FREE_DAILY_LIMIT} free explanations. Come back tomorrow for more — or check back soon, paid plans are coming.</p>`;
+      return;
+    }
     card.innerHTML = `
+      ${usageLine}
       <textarea id="notesInput" placeholder="Paste your notes, a textbook paragraph, or type what's confusing you...">${esc(state.notes)}</textarea>
       ${state.error ? `<p class="err">${esc(state.error)}</p>` : ""}
       <button class="btn-primary" id="explainBtn" style="margin-top:16px;" ${state.stage === "explaining" ? "disabled" : ""}>${state.stage === "explaining" ? "Explaining..." : "Explain this to me"}</button>`;
