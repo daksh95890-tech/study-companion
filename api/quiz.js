@@ -1,4 +1,4 @@
-const MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-2.0-flash"];
+const MODELS = ["gemini-flash-latest", "gemini-2.5-flash", "gemini-flash-lite-latest"];
 
 async function tryModel(model, prompt) {
   const response = await fetch(
