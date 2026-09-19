@@ -46,6 +46,7 @@
   <div class="top-links">
     <h1 style="margin:0;">Explain it. Quiz me on it.</h1>
     <div style="display:flex; gap:14px;">
+      <button class="link-btn" id="accountToggle">Account</button>
       <button class="link-btn" id="weakTopicsToggle">Weak Topics</button>
       <button class="link-btn" id="historyToggle">History</button>
     </div>
@@ -62,7 +63,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let userId = null;
 const FREE_DAILY_LIMIT = 5;
-let state = { stage: "loading", notes: "", explanation: "", sessionId: null, quiz: [], qIndex: 0, picked: null, score: 0, error: "", showHistory: false, history: [], usedToday: 0, limitReached: false, showWeakTopics: false, weakTopics: [] };
+let state = { stage: "loading", notes: "", explanation: "", sessionId: null, quiz: [], qIndex: 0, picked: null, score: 0, error: "", showHistory: false, history: [], usedToday: 0, limitReached: false, showWeakTopics: false, weakTopics: [], showAccount: false, accountMode: "create", accountEmail: "", accountPassword: "", accountError: "", accountMessage: "", userEmail: null };
 
 function startOfTodayISO() {
   const d = new Date();
@@ -96,10 +97,45 @@ async function init() {
     userId = session.user.id;
     document.getElementById("statusLine").textContent = "";
     const usedToday = await checkDailyUsage();
-    setState({ stage: "input", usedToday, limitReached: usedToday >= FREE_DAILY_LIMIT });
+    setState({ stage: "input", usedToday, limitReached: usedToday >= FREE_DAILY_LIMIT, userEmail: session.user.email || null });
   } catch (e) {
     document.getElementById("statusLine").textContent = "Couldn't connect to your account. Check setup and reload.";
   }
+}
+
+async function handleCreateAccount() {
+  const email = document.getElementById("acctEmail").value.trim();
+  const password = document.getElementById("acctPassword").value;
+  if (!email || password.length < 6) {
+    setState({ accountError: "Enter a valid email and a password of at least 6 characters." });
+    return;
+  }
+  const { data, error } = await sb.auth.updateUser({ email, password });
+  if (error) {
+    setState({ accountError: error.message });
+    return;
+  }
+  setState({ accountError: "", accountMessage: "Account created! Your history is now saved to this email.", userEmail: email });
+}
+
+async function handleLogin() {
+  const email = document.getElementById("acctEmail").value.trim();
+  const password = document.getElementById("acctPassword").value;
+  if (!email || !password) {
+    setState({ accountError: "Enter your email and password." });
+    return;
+  }
+  const { error } = await sb.auth.signInWithPassword({ email, password });
+  if (error) {
+    setState({ accountError: error.message });
+    return;
+  }
+  window.location.reload();
+}
+
+async function handleLogout() {
+  await sb.auth.signOut();
+  window.location.reload();
 }
 
 async function callApi(path, body) {
@@ -205,11 +241,38 @@ document.getElementById("historyToggle").addEventListener("click", () => {
 document.getElementById("weakTopicsToggle").addEventListener("click", () => {
   if (state.showWeakTopics) setState({ showWeakTopics: false }); else loadWeakTopics();
 });
+document.getElementById("accountToggle").addEventListener("click", () => {
+  setState({ showAccount: !state.showAccount, showHistory: false, showWeakTopics: false, accountError: "", accountMessage: "" });
+});
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
 function render() {
   const card = document.getElementById("mainCard");
+  if (state.showAccount) {
+    if (state.userEmail) {
+      card.innerHTML = `
+        <p class="explain-text">Signed in as ${esc(state.userEmail)}</p>
+        <p class="muted" style="margin-top:8px;">Your history is saved to this account and will follow you on any device you log into.</p>
+        <button class="btn-ghost" id="logoutBtn" style="margin-top:16px; width:100%;">Log out</button>`;
+      document.getElementById("logoutBtn").addEventListener("click", handleLogout);
+      return;
+    }
+    const isCreate = state.accountMode === "create";
+    card.innerHTML = `
+      <p class="muted" style="margin-bottom:14px;">${isCreate ? "Save your history to an account so it follows you across devices." : "Log in to bring back your saved history on this device."}</p>
+      <input type="text" id="acctEmail" placeholder="Email" value="${esc(state.accountEmail)}" style="width:100%; background:var(--room); border:1px solid var(--deskEdge); border-radius:6px; padding:10px 12px; color:var(--paper); font-family:'IBM Plex Sans',sans-serif; font-size:14px; margin-bottom:8px;">
+      <input type="password" id="acctPassword" placeholder="Password" style="width:100%; background:var(--room); border:1px solid var(--deskEdge); border-radius:6px; padding:10px 12px; color:var(--paper); font-family:'IBM Plex Sans',sans-serif; font-size:14px;">
+      ${state.accountError ? `<p class="err">${esc(state.accountError)}</p>` : ""}
+      ${state.accountMessage ? `<p class="muted" style="color:var(--correct); margin-top:8px;">${esc(state.accountMessage)}</p>` : ""}
+      <button class="btn-primary" id="acctSubmitBtn" style="margin-top:14px;">${isCreate ? "Create account" : "Log in"}</button>
+      <button class="link-btn" id="acctSwitchMode" style="margin-top:12px; display:block;">${isCreate ? "Already have an account? Log in" : "New here? Create an account instead"}</button>`;
+    document.getElementById("acctSubmitBtn").addEventListener("click", isCreate ? handleCreateAccount : handleLogin);
+    document.getElementById("acctSwitchMode").addEventListener("click", () => {
+      setState({ accountMode: isCreate ? "login" : "create", accountError: "", accountMessage: "" });
+    });
+    return;
+  }
   if (state.showWeakTopics) {
     if (state.weakTopics.length === 0) {
       card.innerHTML = `<p class="muted">Not enough quiz data yet. Take a few quizzes first and this will show what needs review.</p>`;
