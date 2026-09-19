@@ -45,7 +45,10 @@
   <div class="dot"></div>
   <div class="top-links">
     <h1 style="margin:0;">Explain it. Quiz me on it.</h1>
-    <button class="link-btn" id="historyToggle">History</button>
+    <div style="display:flex; gap:14px;">
+      <button class="link-btn" id="weakTopicsToggle">Weak Topics</button>
+      <button class="link-btn" id="historyToggle">History</button>
+    </div>
   </div>
   <p class="sub">Paste whatever you're stuck on. Get it explained plainly, then find out if it actually stuck.</p>
   <div id="statusLine" class="muted" style="margin-bottom:14px;">Connecting...</div>
@@ -59,7 +62,7 @@ const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 let userId = null;
 const FREE_DAILY_LIMIT = 5;
-let state = { stage: "loading", notes: "", explanation: "", sessionId: null, quiz: [], qIndex: 0, picked: null, score: 0, error: "", showHistory: false, history: [], usedToday: 0, limitReached: false };
+let state = { stage: "loading", notes: "", explanation: "", sessionId: null, quiz: [], qIndex: 0, picked: null, score: 0, error: "", showHistory: false, history: [], usedToday: 0, limitReached: false, showWeakTopics: false, weakTopics: [] };
 
 function startOfTodayISO() {
   const d = new Date();
@@ -119,7 +122,7 @@ async function handleExplain() {
       setState({ stage: "input", error: result.debug || "Tutor returned nothing. Try again." });
       return;
     }
-    const { data, error } = await sb.from("study_sessions").insert({ user_id: userId, notes: notesVal, explanation: result.text }).select().single();
+    const { data, error } = await sb.from("study_sessions").insert({ user_id: userId, notes: notesVal, explanation: result.text, topic: result.topic || null }).select().single();
     if (error) throw error;
     const newUsed = state.usedToday + 1;
     setState({ explanation: result.text, sessionId: data.id, stage: "explained", usedToday: newUsed, limitReached: newUsed >= FREE_DAILY_LIMIT });
@@ -166,20 +169,58 @@ function reset() {
 async function loadHistory() {
   try {
     const { data } = await sb.from("study_sessions").select("id, notes, created_at, quiz_attempts(score, total)").order("created_at", { ascending: false }).limit(15);
-    setState({ history: data || [], showHistory: true });
+    setState({ history: data || [], showHistory: true, showWeakTopics: false });
   } catch (e) {
-    setState({ showHistory: true, history: [] });
+    setState({ showHistory: true, showWeakTopics: false, history: [] });
+  }
+}
+
+async function loadWeakTopics() {
+  try {
+    const { data } = await sb.from("study_sessions").select("topic, quiz_attempts(score, total)").not("topic", "is", null);
+    const byTopic = {};
+    (data || []).forEach((row) => {
+      const t = row.topic || "Untitled topic";
+      const attempts = row.quiz_attempts || [];
+      attempts.forEach((a) => {
+        if (!byTopic[t]) byTopic[t] = { score: 0, total: 0, attempts: 0 };
+        byTopic[t].score += a.score;
+        byTopic[t].total += a.total;
+        byTopic[t].attempts += 1;
+      });
+    });
+    const list = Object.entries(byTopic)
+      .filter(([, v]) => v.total > 0)
+      .map(([topic, v]) => ({ topic, pct: Math.round((v.score / v.total) * 100), attempts: v.attempts }))
+      .sort((a, b) => a.pct - b.pct);
+    setState({ weakTopics: list, showWeakTopics: true, showHistory: false });
+  } catch (e) {
+    setState({ weakTopics: [], showWeakTopics: true, showHistory: false });
   }
 }
 
 document.getElementById("historyToggle").addEventListener("click", () => {
   if (state.showHistory) setState({ showHistory: false }); else loadHistory();
 });
+document.getElementById("weakTopicsToggle").addEventListener("click", () => {
+  if (state.showWeakTopics) setState({ showWeakTopics: false }); else loadWeakTopics();
+});
 
 function esc(s) { const d = document.createElement("div"); d.textContent = s; return d.innerHTML; }
 
 function render() {
   const card = document.getElementById("mainCard");
+  if (state.showWeakTopics) {
+    if (state.weakTopics.length === 0) {
+      card.innerHTML = `<p class="muted">Not enough quiz data yet. Take a few quizzes first and this will show what needs review.</p>`;
+      return;
+    }
+    card.innerHTML = state.weakTopics.map(t => {
+      const color = t.pct < 50 ? "var(--wrong)" : t.pct < 75 ? "var(--lamp)" : "var(--correct)";
+      return `<div class="history-item"><p style="margin:0 0 4px 0;">${esc(t.topic)}</p><p class="muted" style="margin:0;"><span style="color:${color}; font-weight:600;">${t.pct}%</span> average · ${t.attempts} quiz${t.attempts > 1 ? "zes" : ""} taken</p></div>`;
+    }).join("");
+    return;
+  }
   if (state.showHistory) {
     if (state.history.length === 0) { card.innerHTML = `<p class="muted">No saved topics yet.</p>`; return; }
     card.innerHTML = state.history.map(h => {
